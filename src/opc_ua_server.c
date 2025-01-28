@@ -687,7 +687,7 @@ void handle_add_namespace(void *entity, bool entity_type, const char *req, int *
 
     namespace[binary_len] = '\0';
 
-    UA_Int16 *ns_id = UA_Server_addNamespace(server, namespace);
+    UA_Int16 ns_id = UA_Server_addNamespace(server, namespace);
 
     send_data_response(&ns_id, 2, 0);
 }
