@@ -3945,7 +3945,7 @@ void handle_read_node_values(void *entity, bool entity_type, const char *req, in
 
     int node_count = list_count;
 
-    if(node_count == 0 || node_count > 200) {
+    if(node_count == 0 || node_count > 100) {
         send_error_response("einval");
         return;
     }
@@ -4006,18 +4006,26 @@ void handle_read_node_values(void *entity, bool entity_type, const char *req, in
 
         for(int i = 0; i < result_count; i++) {
             UA_DataValue *dv = &readResponse.results[i];
-            if(dv->status == UA_STATUSCODE_GOOD && dv->hasValue) {
-                ei_encode_tuple_header(resp, &resp_index, 2);
-                ei_encode_atom(resp, &resp_index, "ok");
-                encode_variant_struct(resp, &resp_index, &dv->value);
-            } else {
+            if(dv->status != UA_STATUSCODE_GOOD) {
                 ei_encode_tuple_header(resp, &resp_index, 2);
                 ei_encode_atom(resp, &resp_index, "error");
                 const char *status = UA_StatusCode_name(dv->status);
                 ei_encode_binary(resp, &resp_index, status, strlen(status));
+            } else {
+                ei_encode_tuple_header(resp, &resp_index, 2);
+                ei_encode_atom(resp, &resp_index, "ok");
+                encode_variant_struct(resp, &resp_index, &dv->value);
             }
         }
         ei_encode_empty_list(resp, &resp_index);
+    }
+
+    if((size_t)resp_index > resp_buf_size) {
+        free(resp);
+        UA_ReadResponse_clear(&readResponse);
+        UA_Array_delete(nodesToRead, node_count, &UA_TYPES[UA_TYPES_READVALUEID]);
+        send_error_response("overflow");
+        return;
     }
 
     erlcmd_send(resp, resp_index);

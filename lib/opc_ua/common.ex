@@ -1007,6 +1007,8 @@ defmodule OpcUA.Common do
       # Parse a single value from batch read response.
       # The C layer encodes variant values directly (scalars, arrays, :nil atom).
       defp parse_batch_value(:nil), do: nil
+      defp parse_batch_value(list) when is_list(list), do: Enum.map(list, &parse_c_value/1)
+      defp parse_batch_value(tuple) when is_tuple(tuple), do: parse_c_value(tuple)
       defp parse_batch_value(value), do: value
 
       defp parse_c_value({ns_index, type, name, name_space_uri, server_index}),
