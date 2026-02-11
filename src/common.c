@@ -3932,7 +3932,102 @@ void handle_read_node_value(void *entity, bool entity_type, const char *req, int
     UA_Variant_delete(value);
 }
 
-/* 
+/*
+ *  Batch read 'value' attribute of multiple nodes using UA_Client_Service_read.
+ *  Input: list of {node_id_tuple, index} tuples
+ *  Output: {:ok, [{:ok, value} | {:error, reason}]} | {:error, reason}
+ */
+void handle_read_node_values(void *entity, bool entity_type, const char *req, int *req_index)
+{
+    int list_count;
+    if(ei_decode_list_header(req, req_index, &list_count) < 0)
+        errx(EXIT_FAILURE, ":handle_read_node_values requires a list");
+
+    int node_count = list_count;
+
+    if(node_count == 0 || node_count > 200) {
+        send_error_response("einval");
+        return;
+    }
+
+    // Only client batch read is supported
+    if(!entity_type) {
+        // Skip remaining decode
+        send_error_response("not_supported");
+        return;
+    }
+
+    UA_ReadValueId *nodesToRead = (UA_ReadValueId *)UA_Array_new(
+        node_count, &UA_TYPES[UA_TYPES_READVALUEID]);
+
+    for(int i = 0; i < node_count; i++) {
+        int term_size;
+        if(ei_decode_tuple_header(req, req_index, &term_size) < 0 || term_size != 2)
+            errx(EXIT_FAILURE, "read_node_values: each element must be a 2-tuple");
+
+        nodesToRead[i].nodeId = assemble_node_id(req, req_index);
+        nodesToRead[i].attributeId = UA_ATTRIBUTEID_VALUE;
+        nodesToRead[i].indexRange = UA_STRING_NULL;
+
+        unsigned long data_index;
+        ei_decode_ulong(req, req_index, &data_index);
+    }
+
+    // Decode list tail
+    ei_decode_list_header(req, req_index, &list_count);
+
+    UA_ReadRequest readRequest;
+    UA_ReadRequest_init(&readRequest);
+    readRequest.nodesToRead = nodesToRead;
+    readRequest.nodesToReadSize = node_count;
+
+    UA_ReadResponse readResponse = UA_Client_Service_read((UA_Client *)entity, readRequest);
+
+    // Use dynamic buffer for batch response (max 64KB, within uint16_t limit)
+    size_t resp_buf_size = ERLCMD_BUF_SIZE * 2;
+    char *resp = (char *)malloc(resp_buf_size);
+    int resp_index = sizeof(uint16_t);
+    resp[resp_index++] = response_id;
+    ei_encode_version(resp, &resp_index);
+    ei_encode_tuple_header(resp, &resp_index, 3);
+    encode_caller_metadata(resp, &resp_index);
+
+    if(readResponse.responseHeader.serviceResult != UA_STATUSCODE_GOOD) {
+        ei_encode_tuple_header(resp, &resp_index, 2);
+        ei_encode_atom(resp, &resp_index, "error");
+        const char *status = UA_StatusCode_name(readResponse.responseHeader.serviceResult);
+        ei_encode_binary(resp, &resp_index, status, strlen(status));
+    } else {
+        ei_encode_tuple_header(resp, &resp_index, 2);
+        ei_encode_atom(resp, &resp_index, "ok");
+
+        int result_count = (int)readResponse.resultsSize;
+        ei_encode_list_header(resp, &resp_index, result_count);
+
+        for(int i = 0; i < result_count; i++) {
+            UA_DataValue *dv = &readResponse.results[i];
+            if(dv->status == UA_STATUSCODE_GOOD && dv->hasValue) {
+                ei_encode_tuple_header(resp, &resp_index, 2);
+                ei_encode_atom(resp, &resp_index, "ok");
+                encode_variant_struct(resp, &resp_index, &dv->value);
+            } else {
+                ei_encode_tuple_header(resp, &resp_index, 2);
+                ei_encode_atom(resp, &resp_index, "error");
+                const char *status = UA_StatusCode_name(dv->status);
+                ei_encode_binary(resp, &resp_index, status, strlen(status));
+            }
+        }
+        ei_encode_empty_list(resp, &resp_index);
+    }
+
+    erlcmd_send(resp, resp_index);
+
+    free(resp);
+    UA_ReadResponse_clear(&readResponse);
+    UA_Array_delete(nodesToRead, node_count, &UA_TYPES[UA_TYPES_READVALUEID]);
+}
+
+/*
  *  Read 'value' of a node in the server.
  */
 void handle_read_node_value_by_index(void *entity, bool entity_type, const char *req, int *req_index)

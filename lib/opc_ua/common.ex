@@ -366,6 +366,21 @@ defmodule OpcUA.Common do
       end
 
       @doc """
+      Batch reads 'value' attribute of multiple nodes in a single OPC-UA request.
+      Input: list of {%NodeId{}, index} tuples.
+      Returns {:ok, [{:ok, value} | {:error, reason}]} or {:error, reason}.
+      """
+      @spec read_node_values(GenServer.server(), [{%NodeId{}, integer()}]) ::
+              {:ok, list()} | {:error, binary()}
+      def read_node_values(pid, node_ids_with_index) when is_list(node_ids_with_index) do
+        if(@mix_env != :test) do
+          GenServer.call(pid, {:read, {:values, node_ids_with_index}})
+        else
+          GenServer.call(pid, {:read, {:values, node_ids_with_index}}, :infinity)
+        end
+      end
+
+      @doc """
       Reads 'value' attribute of a node in the server.
       Note: If the value is an array you can search a scalar using `index` parameter.
       """
@@ -639,6 +654,12 @@ defmodule OpcUA.Common do
         {:noreply, state}
       end
 
+      def handle_call({:read, {:values, node_ids_with_index}}, caller_info, state) do
+        c_args = Enum.map(node_ids_with_index, fn {node_id, index} -> {to_c(node_id), index} end)
+        call_port(state, :read_node_values, caller_info, c_args)
+        {:noreply, state}
+      end
+
       def handle_call({:read, {:value_by_index, {node_id, index}}}, caller_info, state) do
         c_args = {to_c(node_id), index}
         call_port(state, :read_node_value_by_index, caller_info, c_args)
@@ -852,6 +873,20 @@ defmodule OpcUA.Common do
         state
       end
 
+      defp handle_c_response({:read_node_values, caller_metadata, {:ok, results}}, state) do
+        parsed = Enum.map(results, fn
+          {:ok, value} -> {:ok, parse_batch_value(value)}
+          {:error, _} = error -> error
+        end)
+        GenServer.reply(caller_metadata, {:ok, parsed})
+        state
+      end
+
+      defp handle_c_response({:read_node_values, caller_metadata, {:error, _} = error}, state) do
+        GenServer.reply(caller_metadata, error)
+        state
+      end
+
       defp handle_c_response({:read_node_value_by_index, caller_metadata, value_response}, state) do
         response = parse_value(value_response)
         GenServer.reply(caller_metadata, response)
@@ -968,6 +1003,11 @@ defmodule OpcUA.Common do
         do: {:ok, Enum.map(array, fn(data) -> parse_c_value(data) end)}
 
       defp parse_value(response), do: response
+
+      # Parse a single value from batch read response.
+      # The C layer encodes variant values directly (scalars, arrays, :nil atom).
+      defp parse_batch_value(:nil), do: nil
+      defp parse_batch_value(value), do: value
 
       defp parse_c_value({ns_index, type, name, name_space_uri, server_index}),
         do:
